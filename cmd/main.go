@@ -1,7 +1,12 @@
 package main
 
-import "fmt"
+import (
+	"github.com/Atennop1/atedis/internal/server"
+)
 
 func main() {
-	fmt.Println("atedis")
+	server := server.New(6379)
+	if err := server.Serve(); err != nil {
+		panic(err)
+	}
 }
