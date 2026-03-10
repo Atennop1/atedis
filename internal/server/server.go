@@ -27,20 +27,26 @@ func (s *Server) Serve() error {
 	if err != nil {
 		return fmt.Errorf("server: failed to establish connection on port %d, %w", s.port, err)
 	}
-
 	defer conn.Close() //nolint:errcheck
 
-	for {
-		respReader := NewRespReader(conn)
+	reader := NewRespReader(conn)
+	writer := NewRespWriter(conn)
 
-		value, err := respReader.Read()
+	for {
+		value, err := reader.Read()
 		if err != nil {
-			return fmt.Errorf("server: failed to read from resp reader on port %d: %w", s.port, err)
+			return fmt.Errorf("server: failed to read from RespReader on port %d: %w", s.port, err)
 		}
 
 		fmt.Println(value)
-		_, _ = conn.Write([]byte("+OK\r\n"))
-	}
 
-	return nil
+		err = writer.Write(RespValue{
+			typ: RespTypeString,
+			str: "OK",
+		})
+
+		if err != nil {
+			return fmt.Errorf("server: failed to write to RespWriter on port %d: %w", s.port, err)
+		}
+	}
 }
