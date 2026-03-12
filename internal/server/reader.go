@@ -29,6 +29,7 @@ func (r *RespReader) Read() (RespValue, error) {
 	case RespTypeBulk:
 		return r.readBulk()
 	}
+
 	return RespValue{}, fmt.Errorf("reader: failed to parse unknown type %b", typ)
 }
 
@@ -102,7 +103,7 @@ func (r *RespReader) readLine() (string, int, error) {
 
 		n++
 		result = append(result, b)
-		if len(result) >= 2 && result[len(result)-2] == '\r' {
+		if len(result) >= 2 && result[len(result)-2] == '\r' && result[len(result)-1] == '\n' {
 			break
 		}
 	}

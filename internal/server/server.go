@@ -16,12 +16,19 @@ import (
 
 type Server struct {
 	port int
+	aof  *AOF
 }
 
-func New(port int) *Server {
+func New(port int) (*Server, error) {
+	aof, err := NewAOF("aof.txt")
+	if err != nil {
+		return nil, fmt.Errorf("server: failed to create AOF: %w", err)
+	}
+
 	return &Server{
 		port: port,
-	}
+		aof:  aof,
+	}, nil
 }
 
 func (s *Server) Serve() error {
@@ -32,16 +39,28 @@ func (s *Server) Serve() error {
 		return fmt.Errorf("server: failed to create listener on port %d: %w", s.port, err)
 	}
 
-	// TODO: add context propagation
-	var eg errgroup.Group
-
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// TODO: add context propagation
+	eg, ctx := errgroup.WithContext(ctx)
 
 	go func() {
 		<-ctx.Done()
 		l.Close() //nolint:errcheck
 	}()
+
+	actions, err := s.aof.Read()
+	if err != nil {
+		return fmt.Errorf("failed to read actions from AOF: %w", err)
+	}
+
+	for _, action := range actions.array {
+		_, err = s.executeCommand(action)
+		if err != nil {
+			return fmt.Errorf("failed to execute action from AOF: %w", err)
+		}
+	}
 
 	for {
 		conn, err := l.Accept()
@@ -58,7 +77,7 @@ func (s *Server) Serve() error {
 			defer c.Close() //nolint:errcheck
 
 			fmt.Println("accepted connection")
-			if err := serveConnection(c); err != nil {
+			if err := s.serveConnection(c); err != nil {
 				return fmt.Errorf("server: failed to serve connection on port %d: %w", s.port, err)
 			}
 
@@ -74,7 +93,7 @@ func (s *Server) Serve() error {
 	return nil
 }
 
-func serveConnection(conn net.Conn) error {
+func (s *Server) serveConnection(conn net.Conn) error {
 	reader := NewRespReader(conn)
 	writer := NewRespWriter(conn)
 
@@ -89,34 +108,46 @@ func serveConnection(conn net.Conn) error {
 			return fmt.Errorf("server: failed to read from RespReader: %w", err)
 		}
 
-		if value.typ != RespTypeArray {
-			fmt.Println("server: invalid request, expected array")
-			continue
-		}
-
-		if len(value.array) == 0 {
-			fmt.Println("server: invalid request, expected array length to be at least 1")
-			continue
-		}
-
-		command := strings.ToUpper(value.array[0].bulk)
-		args := value.array[1:]
-
-		handler, ok := Handlers[command]
-		if !ok {
-			fmt.Printf("invalid command: %s\n", command)
-
-			err = writer.Write(RespValue{typ: RespTypeError, str: fmt.Sprintf("unknown command: \n'%s\n'", command)})
-			if err != nil {
-				return fmt.Errorf("server: failed to write to RespWriter: %w", err)
-			}
-
-			continue
-		}
-
-		err = writer.Write(handler(args))
+		result, err := s.executeCommand(value)
 		if err != nil {
-			return fmt.Errorf("server: failed to write to RespWriter: %w", err)
+			return fmt.Errorf("server: failed to execute command: %w", err)
+		}
+
+		// TODO: write not all commands but only meaningful ones
+		err = s.aof.Write(value)
+		if err != nil {
+			return fmt.Errorf("server: failed to write command to AOF: %w", err)
+		}
+
+		err = writer.Write(result)
+		if err != nil {
+			return fmt.Errorf("server: failed to write command: %w", err)
 		}
 	}
+}
+
+func (s *Server) executeCommand(v RespValue) (RespValue, error) {
+	if v.typ != RespTypeArray {
+		return RespValue{}, fmt.Errorf("server: invalid request, expected array")
+	}
+
+	if len(v.array) == 0 {
+		return RespValue{}, fmt.Errorf("server: invalid request, expected array length to be at least 1")
+	}
+
+	command := strings.ToUpper(v.array[0].bulk)
+	args := v.array[1:]
+
+	handler, ok := Handlers[command]
+	if !ok {
+		fmt.Printf("invalid command: %s\n", command)
+
+		// TODO: TEMP THING FOR TESTING
+		return RespValue{typ: RespTypeString, str: "OK"}, nil
+
+		// later replace to:
+		// return RespValue{typ: RespTypeError, str: fmt.Sprintf("unknown command: \n'%s\n'", command)}
+	}
+
+	return handler(args), nil
 }

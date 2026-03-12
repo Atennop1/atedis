@@ -5,7 +5,11 @@ import (
 )
 
 func main() {
-	server := server.New(6379)
+	server, err := server.New(6379)
+	if err != nil {
+		panic(err)
+	}
+
 	if err := server.Serve(); err != nil {
 		panic(err)
 	}
